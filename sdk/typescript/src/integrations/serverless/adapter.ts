@@ -11,25 +11,8 @@
  * deferral is invisible to callers.
  */
 
-interface ServerlessConnection {
-  prepare(sql: string): Promise<ServerlessStatement>;
-  execute(sql: string, args?: any[]): Promise<any>;
-  exec(sql: string): Promise<any>;
-  batch(statements: string[], mode?: string): Promise<any>;
-  transaction(fn: (...args: any[]) => any): any;
-  close(): Promise<void>;
-}
-
-interface ServerlessStatement {
-  run(...args: any[]): Promise<any>;
-  get(...args: any[]): Promise<any>;
-  all(...args: any[]): Promise<any[]>;
-  raw(raw?: boolean): ServerlessStatement;
-  pluck(pluck?: boolean): ServerlessStatement;
-  safeIntegers(toggle?: boolean): ServerlessStatement;
-  columns(): any[];
-  iterate(...args: any[]): AsyncGenerator<any>;
-}
+import type { Connection, Statement as ServerlessStatement } from "@tursodatabase/serverless";
+import type { DatabasePromise } from "@tursodatabase/database-common";
 
 /**
  * A statement that defers the async prepare() call until execution.
@@ -39,24 +22,23 @@ interface ServerlessStatement {
  * SQL and only calling conn.prepare() when run/get/all is invoked.
  */
 class LazyStatement {
-  private conn: ServerlessConnection;
+  private conn: Connection;
   private sql: string;
-  private stmtPromise: Promise<ServerlessStatement> | null = null;
   private _raw = false;
+  private _pluck = false;
+  private _safeIntegers = false;
 
-  constructor(conn: ServerlessConnection, sql: string) {
+  constructor(conn: Connection, sql: string) {
     this.conn = conn;
     this.sql = sql;
   }
 
-  private getStmt(): Promise<ServerlessStatement> {
-    if (!this.stmtPromise) {
-      this.stmtPromise = this.conn.prepare(this.sql).then((stmt) => {
-        if (this._raw) stmt.raw(true);
-        return stmt;
-      });
-    }
-    return this.stmtPromise;
+  private async getStmt(): Promise<ServerlessStatement> {
+    const stmt = await this.conn.prepare(this.sql);
+    if (this._raw) stmt.raw(true);
+    if (this._pluck) stmt.pluck(true);
+    if (this._safeIntegers) stmt.safeIntegers(true);
+    return stmt;
   }
 
   raw(raw?: boolean): this {
@@ -64,17 +46,18 @@ class LazyStatement {
     return this;
   }
 
-  pluck(_pluck?: boolean): this {
-    // Not commonly used by AgentFS internals
+  pluck(pluck?: boolean): this {
+    this._pluck = pluck !== false;
     return this;
   }
 
-  safeIntegers(_toggle?: boolean): this {
+  safeIntegers(toggle?: boolean): this {
+    this._safeIntegers = toggle !== false;
     return this;
   }
 
   columns(): any[] {
-    throw new Error("columns() is not supported synchronously on serverless adapter");
+    throw new Error("columns() requires an async prepare — not supported synchronously in serverless mode");
   }
 
   get source(): void {
@@ -110,12 +93,18 @@ class LazyStatement {
   }
 
   bind(..._args: any[]): this {
-    return this;
+    throw new Error("bind() is not supported in serverless mode — pass parameters to run/get/all instead");
   }
 
   interrupt(): void {}
 
   close(): void {}
+}
+
+function notSupported(name: string): () => never {
+  return () => {
+    throw new Error(`${name}() is not supported in serverless mode`);
+  };
 }
 
 /**
@@ -136,7 +125,7 @@ class LazyStatement {
  * const agent = await AgentFS.openWith(db);
  * ```
  */
-export function createServerlessAdapter(conn: ServerlessConnection): any {
+export function createServerlessAdapter(conn: Connection): DatabasePromise {
   return {
     name: "serverless",
     readonly: false,
@@ -144,9 +133,9 @@ export function createServerlessAdapter(conn: ServerlessConnection): any {
     memory: false,
     inTransaction: false,
 
-    connect(): Promise<void> {
-      // serverless connections are lazy — no explicit connect needed
-      return Promise.resolve();
+    async connect(): Promise<void> {
+      // Validate the connection by running a simple query
+      await conn.execute("SELECT 1");
     },
 
     prepare(sql: string): LazyStatement {
@@ -161,23 +150,23 @@ export function createServerlessAdapter(conn: ServerlessConnection): any {
       await conn.exec(sql);
     },
 
-    pragma(_source: any, _options: any): Promise<any[]> {
-      return Promise.resolve([]);
+    pragma(): Promise<any[]> {
+      throw new Error("pragma() is not supported in serverless mode — pragmas are not available over HTTP");
     },
 
-    backup() {},
-    serialize() {},
-    function() {},
-    aggregate() {},
-    table() {},
-    loadExtension() {},
-    maxWriteReplicationIndex() {},
-    interrupt() {},
+    backup: notSupported("backup"),
+    serialize: notSupported("serialize"),
+    function: notSupported("function"),
+    aggregate: notSupported("aggregate"),
+    table: notSupported("table"),
+    loadExtension: notSupported("loadExtension"),
+    maxWriteReplicationIndex: notSupported("maxWriteReplicationIndex"),
+    interrupt: notSupported("interrupt"),
 
     defaultSafeIntegers(_toggle?: boolean) {},
 
     async close(): Promise<void> {
       await conn.close();
     },
-  };
+  } as unknown as DatabasePromise;
 }

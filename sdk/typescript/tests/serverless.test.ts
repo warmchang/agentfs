@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { connect } from "@tursodatabase/serverless";
-import { createServerlessAdapter } from "../src/integrations/serverless/adapter.js";
+import { createServerlessAdapter } from "../src/integrations/serverless/index.js";
 import { AgentFS } from "../src/index_node.js";
 
 const SQLD_URL = process.env.SQLD_URL || "http://localhost:8080";
