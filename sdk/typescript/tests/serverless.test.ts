@@ -5,7 +5,19 @@ import { AgentFS } from "../src/index_node.js";
 
 const SQLD_URL = process.env.SQLD_URL || "http://localhost:8080";
 
-describe("Serverless Integration", () => {
+// Check if sqld is reachable before running tests
+async function isSqldAvailable(): Promise<boolean> {
+  try {
+    const resp = await fetch(`${SQLD_URL}/version`);
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+const sqldAvailable = await isSqldAvailable();
+
+describe.skipIf(!sqldAvailable)("Serverless Integration", () => {
   let agent: Awaited<ReturnType<typeof AgentFS.openWith>>;
 
   beforeAll(async () => {
