@@ -9,6 +9,11 @@
  * Solution: return a LazyStatement that defers the actual prepare() call
  * until run()/get()/all() is called — those are already async, so the
  * deferral is invisible to callers.
+ *
+ * Note on parameter passing: DatabasePromise's Statement uses rest params
+ * (run(...args)), while serverless Statement uses a single array param
+ * (run(args?)). The adapter collects rest params and forwards them as a
+ * single array — this is correct and tested.
  */
 
 import type { Connection, Statement as ServerlessStatement } from "@tursodatabase/serverless";
@@ -20,10 +25,14 @@ import type { DatabasePromise } from "@tursodatabase/database-common";
  * DatabasePromise.prepare() must return synchronously, but the serverless
  * driver's prepare() is async. LazyStatement bridges this by storing the
  * SQL and only calling conn.prepare() when run/get/all is invoked.
+ *
+ * The statement promise is cached for performance — options (raw, pluck,
+ * safeIntegers) are applied at execution time on the resolved statement.
  */
 class LazyStatement {
   private conn: Connection;
   private sql: string;
+  private stmtPromise: Promise<ServerlessStatement> | null = null;
   private _raw = false;
   private _pluck = false;
   private _safeIntegers = false;
@@ -34,10 +43,14 @@ class LazyStatement {
   }
 
   private async getStmt(): Promise<ServerlessStatement> {
-    const stmt = await this.conn.prepare(this.sql);
-    if (this._raw) stmt.raw(true);
-    if (this._pluck) stmt.pluck(true);
-    if (this._safeIntegers) stmt.safeIntegers(true);
+    if (!this.stmtPromise) {
+      this.stmtPromise = this.conn.prepare(this.sql);
+    }
+    const stmt = await this.stmtPromise;
+    // Apply options at execution time so they reflect the current state
+    stmt.raw(this._raw);
+    stmt.pluck(this._pluck);
+    stmt.safeIntegers(this._safeIntegers);
     return stmt;
   }
 
@@ -71,6 +84,10 @@ class LazyStatement {
   get database(): any {
     return undefined;
   }
+
+  // Note: DatabasePromise Statement uses rest params (...args),
+  // but serverless Statement uses a single array param (args?).
+  // We collect rest params and forward as a single array.
 
   async run(...args: any[]): Promise<{ changes: number; lastInsertRowid: number }> {
     const stmt = await this.getStmt();
@@ -142,8 +159,15 @@ export function createServerlessAdapter(conn: Connection): DatabasePromise {
       return new LazyStatement(conn, sql);
     },
 
-    transaction(fn: (...args: any[]) => any) {
-      return conn.transaction(fn);
+    // DatabasePromise.transaction() returns a wrapper function that
+    // executes fn inside a transaction when called. The serverless
+    // driver's transaction() has the same shape.
+    transaction(fn: (...args: any[]) => Promise<any>) {
+      return (...bindParameters: any[]) => {
+        return conn.transaction(async () => {
+          return fn(...bindParameters);
+        });
+      };
     },
 
     async exec(sql: string): Promise<void> {
