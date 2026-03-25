@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.4] - 2026-03-25
+
+### Fixed
+
+- TypeScript SDK: Add `@tursodatabase/serverless` to dev dependencies to fix CI build.
+
 ## [0.6.3] - 2026-03-25
 
 ### Added
